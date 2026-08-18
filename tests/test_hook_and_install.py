@@ -538,3 +538,20 @@ class TestEmptyShells(HookTestCase):
         result = save_transcript.archive(path, self.event(), env=self.env, home=self.home)
         self.assertEqual(result.get("skipped"), "nessuna conversazione")
         self.assertFalse(os.path.isdir(os.path.join(self.root, "proj")))
+
+
+class TestStatusCount(HookTestCase):
+    def test_index_files_are_not_counted_as_conversations(self):
+        save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
+        import io
+        import contextlib
+        buffer = io.StringIO()
+        env_backup = dict(os.environ)
+        os.environ["CLAUDE_TRANSCRIPT_DIR"] = self.root
+        try:
+            with contextlib.redirect_stdout(buffer):
+                install_hooks.main(["--status"])
+        finally:
+            os.environ.clear()
+            os.environ.update(env_backup)
+        self.assertIn("1 conversazioni archiviate", buffer.getvalue())

@@ -88,7 +88,7 @@ reale l'indice del progetto più grande pesa 64 KB contro 59 MB di transcript.
 python3 scripts/install_hooks.py --status     # cosa è registrato e dove
 python3 scripts/save_transcript.py --backfill      # archivia lo storico esistente
 python3 scripts/save_transcript.py --rebuild-index # ricostruisce gli indici dall'archivio
-python3 -m unittest discover -s tests              # 123 test, mezzo secondo
+python3 -m unittest discover -s tests              # 124 test, mezzo secondo
 ```
 
 ## Configurazione
@@ -131,5 +131,5 @@ scripts/transcript_lib.py             parsing e rendering, senza side effect
 scripts/session_index.py              l'indice per progetto: estrazione e rendering
 scripts/install_hooks.py              merge idempotente dei settings, con backup
 references/transcript-jsonl-format.md il formato .jsonl come osservato sul campo
-tests/                                123 test, standard library
+tests/                                124 test, standard library
 ```

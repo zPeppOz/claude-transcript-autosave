@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK_SCRIPT = os.path.join(HERE, "save_transcript.py")
 MARKER = "save_transcript.py"
 LOG_NAME = "_autosave.log"
+INDEX_MD = "INDEX.md"
 DEFAULT_EVENTS = ("Stop", "SessionEnd", "PreCompact")
 ALL_EVENTS = ("Stop", "SessionEnd", "PreCompact", "SubagentStop")
 TIMEOUT_SECONDS = 15
@@ -197,9 +198,11 @@ def cmd_status(home, project_dir, root):
     print(f"archivio    : {root}")
     warn_if_root_is_foreign(root)
     if os.path.isdir(root):
+        # INDEX.md files live alongside the transcripts; counting them would
+        # inflate the total by one per project plus the root map.
         sessions = sum(1 for _d, _s, files in os.walk(root)
-                       for f in files if f.endswith(".md"))
-        print(f"              {sessions} sessioni archiviate")
+                       for f in files if f.endswith(".md") and f != INDEX_MD)
+        print(f"              {sessions} conversazioni archiviate")
     else:
         print("              (ancora vuoto)")
     print()
