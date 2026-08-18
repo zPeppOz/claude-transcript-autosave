@@ -265,3 +265,17 @@ class TestTurnCounting(unittest.TestCase):
                        message={"role": "assistant", "content": [
                            {"type": "tool_use", "id": "a", "name": "Read", "input": {}}]})]
         self.assertEqual(lib.session_meta(records, home="/home/u").assistant_turns, 1)
+
+
+class TestSessionCwd(unittest.TestCase):
+    """A session that `cd`s around must stay in one project folder, or the same
+    conversation shows up twice in the memory under two different names."""
+
+    def test_uses_the_launch_directory(self):
+        records = [rec(type="user", cwd="/home/u/proj"),
+                   rec(type="assistant", cwd="/home/u/proj/sub"),
+                   rec(type="user", cwd="/home/u/altro")]
+        self.assertEqual(lib.session_cwd(records), "/home/u/proj")
+
+    def test_falls_back_when_no_record_has_one(self):
+        self.assertEqual(lib.session_cwd([{"type": "user"}], "/fallback"), "/fallback")

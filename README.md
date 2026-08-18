@@ -1,17 +1,31 @@
 # claude-transcript-autosave
 
-Salva su disco il transcript di ogni sessione Claude Code, automaticamente, a
-ogni fine turno dell'agente. Nessun comando da ricordare: si aggancia agli hook
-di Claude Code e archivia in Markdown leggibile più copia `.jsonl` fedele.
+Una memoria automatica delle conversazioni con Claude Code. Si aggancia agli
+hook, archivia ogni sessione mentre accade — Markdown leggibile più copia
+`.jsonl` fedele — e mantiene in ogni progetto un indice interrogabile di cosa è
+stato detto, così una sessione passata si ritrova con un `grep` invece che a
+memoria.
 
 ```
 ~/.claude/session-archive/
+├── INDEX.md                             ← mappa dei progetti, ultima attività
 ├── addway-siarx/
+│   ├── INDEX.md                         ← una voce per conversazione: richiesta e file toccati
+│   ├── _index.json                      ← gli stessi dati, machine-readable
 │   ├── 2026-08-18_1724-5133ad3d.md      ← riscritto a ogni turno, sempre aggiornato
 │   ├── 2026-08-18_1724-5133ad3d.jsonl   ← copia bit-per-bit del transcript nativo
 │   └── 2026-08-17_0910-eed271b7.precompact-1.md   ← snapshot immutabile pre-compattazione
 ├── xr1-tesoro/
 └── _autosave.log
+```
+
+Una voce di indice:
+
+```markdown
+## 2026-07-28 18:03 — Add DDP import and fascicolo tracking
+- `2026-07-28_1803-eed271b7.md` · 2 turni · 15 tool · 3 min · branch `test`
+- chiesto: Review this change for security vulnerabilities…
+- consultati: `src/lib/import-platform/etl.ts`, `src/lib/import-platform/persist.ts` (+8)
 ```
 
 ## Installazione
@@ -43,11 +57,21 @@ tool call con il suo output — la cosa che manca al `.jsonl` grezzo. Il
 ragionamento e gli output lunghi stanno in blocchi `<details>` richiudibili; i
 messaggi molto lunghi vengono piegati, mai troncati.
 
+## Ricordare
+
+Si cerca negli indici, che sono piccoli e densi, non nei transcript, che sono
+decine di MB:
+
 ```bash
-grep -rl "openfga" ~/.claude/session-archive --include='*.md'   # in quali sessioni ne ho parlato
-grep -h '^title:' $(find ~/.claude/session-archive -name '*.md' -mtime -7)
-tail -5 ~/.claude/session-archive/_autosave.log                  # sta salvando?
+cat ~/.claude/session-archive/INDEX.md                              # quali progetti, ultima attività
+grep -i -B2 "openfga" ~/.claude/session-archive/*/INDEX.md          # dove se n'è parlato
+grep -l "src/lib/etl.ts" ~/.claude/session-archive/*/INDEX.md       # chi ha toccato quel file
+tail -5 ~/.claude/session-archive/_autosave.log                     # sta salvando?
 ```
+
+I due campi che fanno il lavoro sono `chiesto:` — la richiesta iniziale con le
+parole dell'utente — e `modificati:` / `consultati:`, i file toccati. Titolo e
+data da soli non rispondono a "quale sessione ha lavorato su questo file".
 
 ## Comandi
 
@@ -57,8 +81,9 @@ tail -5 ~/.claude/session-archive/_autosave.log                  # sta salvando?
 ./install.sh --events Stop                   # solo fine turno
 ./install.sh --uninstall                     # rimuove hook e skill (l'archivio resta)
 python3 scripts/install_hooks.py --status     # cosa è registrato e dove
-python3 scripts/save_transcript.py --backfill # archivia lo storico esistente
-python3 -m unittest discover -s tests         # 69 test, mezzo secondo
+python3 scripts/save_transcript.py --backfill      # archivia lo storico esistente
+python3 scripts/save_transcript.py --rebuild-index # ricostruisce gli indici dall'archivio
+python3 -m unittest discover -s tests              # 118 test, mezzo secondo
 ```
 
 ## Configurazione
@@ -75,7 +100,10 @@ python3 -m unittest discover -s tests         # 69 test, mezzo secondo
   `_autosave.log`.
 - **Un file per sessione, non per turno.** Il nome deriva dal *primo* timestamp
   della sessione, non dall'orologio, così il file viene aggiornato invece di
-  moltiplicarsi.
+  moltiplicarsi. Vale anche per l'indice: una voce per conversazione.
+- **Gli indici sopravvivono a se stessi.** `_index.json` è una cache: se sparisce
+  o si corrompe, `--rebuild-index` lo ricostruisce dai transcript archiviati. Le
+  sessioni parallele sullo stesso progetto sono serializzate da un lock.
 - **Gli hook altrui restano al loro posto.** L'installer riscrive solo le proprie
   voci, con backup timestampato; rieseguirlo converge senza duplicati.
 - **Scritture atomiche, permessi `0600`.** Un hook ucciso dal timeout non lascia
@@ -95,7 +123,8 @@ SKILL.md                              istruzioni per Claude: installare, verific
 install.sh                            front door: skill + hook
 scripts/save_transcript.py            l'hook: stdin → archivio (esce sempre 0)
 scripts/transcript_lib.py             parsing e rendering, senza side effect
+scripts/session_index.py              l'indice per progetto: estrazione e rendering
 scripts/install_hooks.py              merge idempotente dei settings, con backup
 references/transcript-jsonl-format.md il formato .jsonl come osservato sul campo
-tests/                                69 test, standard library
+tests/                                118 test, standard library
 ```

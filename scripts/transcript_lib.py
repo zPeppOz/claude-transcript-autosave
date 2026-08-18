@@ -133,6 +133,22 @@ def project_slug(cwd, home):
     return "-".join(parts) or "root"
 
 
+def session_cwd(records, fallback=""):
+    """The directory the session was launched from.
+
+    Deliberately the *first* cwd in the transcript, not the current one: a
+    session that cd's into a subproject halfway through would otherwise be filed
+    under two different projects, and the same conversation would appear twice in
+    the memory under different names. The launch directory is also how Claude
+    Code itself attributes a session to a project folder, so the archive stays
+    aligned with `~/.claude/projects`.
+    """
+    for rec in records:
+        if rec.get("cwd"):
+            return rec["cwd"]
+    return fallback
+
+
 def output_basename(records, session_id, fallback_stem=""):
     """Build the archive filename stem.
 

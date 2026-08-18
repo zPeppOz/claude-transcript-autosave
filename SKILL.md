@@ -1,18 +1,27 @@
 ---
 name: transcript-autosave
-description: Salva automaticamente su disco il transcript di ogni sessione Claude Code, agganciandosi agli hook Stop, SessionEnd e PreCompact, in Markdown leggibile più copia JSONL fedele. Usa questa skill ogni volta che l'utente parla di salvare, archiviare, esportare, conservare, versionare o ritrovare i transcript, le conversazioni o la cronologia delle sessioni di Claude Code; di attivare, disattivare, verificare o diagnosticare il salvataggio automatico; di hook Stop / SessionEnd / PreCompact / SubagentStop; oppure quando dice cose come "dov'è finita quella sessione", "recupera la conversazione di ieri", "ho perso tutto dopo il /clear", "fai un backup delle chat", "voglio rileggere cosa avevamo deciso", "esportami questa sessione". Attiva anche per cercare dentro l'archivio delle sessioni passate e per capire perché un salvataggio non è avvenuto.
+description: Memoria automatica delle conversazioni con Claude Code. Aggancia gli hook Stop, SessionEnd e PreCompact per archiviare ogni sessione su disco (Markdown leggibile + copia JSONL) e mantiene in ogni cartella di progetto un INDEX.md interrogabile, con richiesta iniziale e file toccati di ogni conversazione. Usa questa skill ogni volta che serve ricordare o ritrovare qualcosa detto in una sessione passata: "cosa avevamo deciso su X", "come avevamo risolto quel bug", "riprendiamo il lavoro di ieri", "di cosa abbiamo parlato la settimana scorsa", "quale sessione ha toccato questo file", "ho perso tutto dopo il /clear". Usala anche quando si parla di salvare, archiviare, esportare, conservare o versionare transcript, conversazioni o cronologia delle sessioni; di attivare, disattivare, verificare o diagnosticare il salvataggio automatico; di hook Stop / SessionEnd / PreCompact / SubagentStop; o di ricostruire l'indice dell'archivio. Prima di rispondere "non ho memoria delle sessioni precedenti", controlla qui: probabilmente ce l'hai.
 ---
 
 # Transcript autosave
 
-Archivia ogni sessione Claude Code mentre accade, senza che l'utente debba
-ricordarsi di farlo. Tre hook (`Stop`, `SessionEnd`, `PreCompact`) invocano uno
-script che scrive due file per sessione:
+Dà a Claude una memoria delle conversazioni passate. Tre hook (`Stop`,
+`SessionEnd`, `PreCompact`) archiviano ogni sessione mentre accade, e ogni
+cartella di progetto mantiene un indice interrogabile di cosa è stato detto:
 
 ```
-~/.claude/session-archive/<progetto>/<data>_<ora>-<sid8>.md      # leggibile
-~/.claude/session-archive/<progetto>/<data>_<ora>-<sid8>.jsonl   # copia fedele
+~/.claude/session-archive/
+├── INDEX.md                              # mappa dei progetti
+└── <progetto>/
+    ├── INDEX.md                          # una voce per conversazione
+    ├── _index.json                        # gli stessi dati, machine-readable
+    ├── <data>_<ora>-<sid8>.md            # la conversazione, leggibile
+    └── <data>_<ora>-<sid8>.jsonl         # copia fedele del transcript nativo
 ```
+
+Archiviare senza indicizzare non sarebbe memoria: sarebbe un mucchio di file in
+cui, per ricordare qualcosa, bisogna prima indovinare quale dei duecento aprire.
+L'indice esiste per rendere quella domanda rispondibile con un `grep`.
 
 Il `.md` viene **riscritto** a ogni fine turno, quindi contiene sempre lo stato
 corrente della sessione: un file vivo per sessione, non uno per turno. Il
@@ -84,30 +93,54 @@ record Xms -> <file>` oppure `SKIP`/`ERRORE` con il motivo. Se il log non ha una
 riga nuova dopo un turno, l'hook non è stato invocato — il problema è nei
 settings, non nello script.
 
-## Ritrovare una sessione
+## Usare l'archivio come memoria
 
-È l'uso quotidiano dell'archivio. Il frontmatter YAML rende ogni file
-interrogabile:
+È l'uso principale della skill. Quando l'utente chiede qualcosa che riguarda il
+passato — "cosa avevamo deciso su X", "come l'avevamo risolto", "riprendiamo da
+dove eravamo" — non rispondere che non hai memoria delle sessioni precedenti:
+cercala. Il percorso è sempre lo stesso, dal generale al particolare.
 
 ```bash
-# le sessioni recenti di un progetto
-ls -t ~/.claude/session-archive/addway-siarx/*.md | head
+# 1. quali progetti esistono e quando sono stati toccati l'ultima volta
+cat ~/.claude/session-archive/INDEX.md
 
-# in quali sessioni si è parlato di una cosa
-grep -rl "openfga" ~/.claude/session-archive --include='*.md'
+# 2. in quali conversazioni si è parlato di un tema (cerca in tutti gli indici)
+grep -i -B2 "openfga" ~/.claude/session-archive/*/INDEX.md
 
-# i titoli delle sessioni dell'ultima settimana
-grep -h '^title:' $(find ~/.claude/session-archive -name '*.md' -mtime -7)
+# 3. quale sessione ha modificato un certo file
+grep -l "src/lib/import-platform/etl.ts" ~/.claude/session-archive/*/INDEX.md
 
-# una sessione specifica per id
-find ~/.claude/session-archive -name '*-eed271b7.md'
+# 4. leggi la conversazione trovata
+cat ~/.claude/session-archive/addway-siarx/2026-07-28_1803-eed271b7.md
 ```
 
-Quando l'utente chiede di recuperare una conversazione, cerca prima
-nell'archivio con `grep -rl`, poi leggi il `.md`: contiene i prompt integrali, le
-risposte, il ragionamento e le tool call con il loro output, già ricuciti
-insieme. Il `.jsonl` accanto serve solo se ti serve un dettaglio che il rendering
-comprime.
+Cerca **prima negli `INDEX.md`**, non nei transcript completi: gli indici sono
+piccoli e densi, i transcript sono decine di MB e un `grep -r` su tutto
+l'archivio riempie il contesto di rumore. Passa al `.md` completo solo quando sai
+quale ti serve.
+
+Ogni voce dell'indice contiene le chiavi con cui si recupera davvero una
+conversazione, scelte perché rispondono alle domande che le persone fanno
+davvero:
+
+- **`chiesto:`** — la richiesta iniziale con le parole dell'utente, prima che la
+  conversazione derivasse. È il campo più utile dell'indice.
+- **`modificati:`** / **`consultati:`** — i file toccati. Risponde a "quale
+  sessione ha lavorato su questo file", che titolo e data da soli non possono.
+- titolo, data, durata, numero di turni, branch git, snapshot pre-compattazione.
+
+Se un indice manca, è corrotto o precede una modifica al formato, si ricostruisce
+dai transcript già archiviati — funziona anche se gli originali in
+`~/.claude/projects` non ci sono più:
+
+```bash
+python3 scripts/save_transcript.py --rebuild-index
+```
+
+L'indice si aggiorna da solo a ogni fine turno: una voce per sessione, non per
+turno. Le sessioni parallele sullo stesso progetto sono serializzate da un lock,
+perché due scritture simultanee farebbero sparire una conversazione dalla memoria
+senza alcun errore visibile.
 
 ## Configurare
 

@@ -20,6 +20,7 @@ sys.path.insert(0, SCRIPTS)
 
 import install_hooks
 import save_transcript
+import session_index
 
 
 def setUpModule():
@@ -78,14 +79,19 @@ class HookTestCase(unittest.TestCase):
         path = os.path.join(self.root, sub)
         return sorted(os.listdir(path)) if os.path.isdir(path) else []
 
+    def transcripts(self, sub="proj"):
+        """Archived conversations only — the index machinery lives alongside them."""
+        return [f for f in self.files(sub)
+                if f.endswith((".md", ".jsonl")) and f != session_index.INDEX_MD]
+
 
 class TestArchive(HookTestCase):
     def test_writes_markdown_and_raw_copy(self):
         result = save_transcript.archive(self.transcript, self.event(),
                                         env=self.env, home=self.home)
         self.assertEqual(len(result["written"]), 2)
-        self.assertEqual(self.files(), ["2026-08-18_0900-dead1234.jsonl",
-                                        "2026-08-18_0900-dead1234.md"])
+        self.assertEqual(self.transcripts(), ["2026-08-18_0900-dead1234.jsonl",
+                                              "2026-08-18_0900-dead1234.md"])
         md = read_text(result["written"][0])
         self.assertIn("prima domanda", md)
         self.assertIn("prima risposta", md)
@@ -103,7 +109,7 @@ class TestArchive(HookTestCase):
     def test_repeated_turns_rewrite_one_file(self):
         for _ in range(3):
             save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
-        self.assertEqual(len(self.files()), 2)
+        self.assertEqual(len(self.transcripts()), 2)
 
     def test_growing_transcript_updates_the_same_file(self):
         save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
@@ -112,7 +118,7 @@ class TestArchive(HookTestCase):
                                  "cwd": self.cwd, "sessionId": "dead1234-beef",
                                  "message": {"role": "user", "content": "seconda domanda"}}) + "\n")
         result = save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
-        self.assertEqual(len(self.files()), 2)
+        self.assertEqual(len(self.transcripts()), 2)
         self.assertIn("seconda domanda", read_text(result["written"][0]))
 
     def test_precompact_snapshots_are_immutable(self):
@@ -122,7 +128,7 @@ class TestArchive(HookTestCase):
                                 env=self.env, home=self.home)
         save_transcript.archive(self.transcript, self.event("PreCompact"),
                                 env=self.env, home=self.home)
-        names = self.files()
+        names = self.transcripts()
         self.assertIn("2026-08-18_0900-dead1234.precompact-1.md", names)
         self.assertIn("2026-08-18_0900-dead1234.precompact-2.md", names)
         self.assertNotIn("2026-08-18_0900-dead1234.md", names)
@@ -130,7 +136,7 @@ class TestArchive(HookTestCase):
     def test_session_end_updates_the_canonical_file(self):
         save_transcript.archive(self.transcript, self.event("Stop"), env=self.env, home=self.home)
         save_transcript.archive(self.transcript, self.event("SessionEnd"), env=self.env, home=self.home)
-        self.assertEqual(len(self.files()), 2)
+        self.assertEqual(len(self.transcripts()), 2)
         md = read_text(os.path.join(self.root, "proj", "2026-08-18_0900-dead1234.md"))
         self.assertIn('saved_on: "SessionEnd"', md)
 
@@ -361,3 +367,163 @@ class TestForeignRootGuard(unittest.TestCase):
         for i in range(3):
             open(os.path.join(self.tmp.name, f"ses_{i}.jsonl"), "w").close()
         self.assertEqual(install_hooks.foreign_files(self.tmp.name), 3)
+
+
+class TestIndexIntegration(HookTestCase):
+    """The index is what makes the archive usable as memory: it has to stay
+    correct across the way the hook actually runs — the same session archived
+    once per turn, several sessions per project, snapshots in between."""
+
+    def index_json(self, sub="proj"):
+        return json.loads(read_text(os.path.join(self.root, sub, session_index.INDEX_JSON)))
+
+    def index_md(self, sub="proj"):
+        return read_text(os.path.join(self.root, sub, session_index.INDEX_MD))
+
+    def second_session(self):
+        path = os.path.join(self.tmp.name, "cafe5678-9999.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "type": "user", "timestamp": "2026-08-19T09:00:00.000Z", "cwd": self.cwd,
+                "sessionId": "cafe5678-9999",
+                "message": {"role": "user", "content": "altra conversazione"}}) + "\n")
+        return path, {"hook_event_name": "Stop", "session_id": "cafe5678-9999",
+                      "transcript_path": path, "cwd": self.cwd}
+
+    def test_archiving_creates_both_index_files(self):
+        save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
+        self.assertIn(session_index.INDEX_MD, self.files())
+        self.assertIn(session_index.INDEX_JSON, self.files())
+        self.assertIn("proj", read_text(os.path.join(self.root, session_index.INDEX_MD)))
+
+    def test_index_entry_carries_prompt_and_title(self):
+        save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
+        entry = self.index_json()["sessions"][0]
+        self.assertEqual(entry["first_prompt"], "prima domanda")
+        self.assertEqual(entry["md"], "2026-08-18_0900-dead1234.md")
+        self.assertIn("prima domanda", self.index_md())
+
+    def test_one_entry_per_session_not_per_turn(self):
+        for _ in range(4):
+            save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
+        self.assertEqual(len(self.index_json()["sessions"]), 1)
+
+    def test_multiple_sessions_accumulate_newest_first(self):
+        save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
+        path, event = self.second_session()
+        save_transcript.archive(path, event, env=self.env, home=self.home)
+        sessions = self.index_json()["sessions"]
+        self.assertEqual(len(sessions), 2)
+        md = self.index_md()
+        self.assertLess(md.index("altra conversazione"), md.index("prima domanda"))
+
+    def test_snapshot_does_not_create_a_second_entry(self):
+        save_transcript.archive(self.transcript, self.event("Stop"), env=self.env, home=self.home)
+        save_transcript.archive(self.transcript, self.event("PreCompact"),
+                                env=self.env, home=self.home)
+        sessions = self.index_json()["sessions"]
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["snapshots"], ["2026-08-18_0900-dead1234.precompact-1.md"])
+        self.assertEqual(sessions[0]["md"], "2026-08-18_0900-dead1234.md")
+
+    def test_oversized_transcript_is_still_indexed(self):
+        """A session missing from the index is invisible to recall, even though
+        its raw copy sits right there."""
+        env = dict(self.env, CLAUDE_TRANSCRIPT_MAX_MB="0")
+        save_transcript.archive(self.transcript, self.event(), env=env, home=self.home)
+        self.assertEqual(len(self.index_json()["sessions"]), 1)
+
+    def test_corrupted_index_does_not_block_the_save(self):
+        save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
+        with open(os.path.join(self.root, "proj", session_index.INDEX_JSON), "w") as fh:
+            fh.write("{ non piu' json")
+        result = save_transcript.archive(self.transcript, self.event(),
+                                        env=self.env, home=self.home)
+        self.assertTrue(result.get("written"))
+        self.assertEqual(len(self.index_json()["sessions"]), 1)
+
+    def test_rebuild_recovers_the_index_from_the_archive_alone(self):
+        save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
+        path, event = self.second_session()
+        save_transcript.archive(path, event, env=self.env, home=self.home)
+        os.remove(os.path.join(self.root, "proj", session_index.INDEX_JSON))
+        os.remove(os.path.join(self.root, "proj", session_index.INDEX_MD))
+
+        count = save_transcript.rebuild_index(self.env, self.home)
+        self.assertEqual(count, 2)
+        self.assertEqual(len(self.index_json()["sessions"]), 2)
+        self.assertIn("prima domanda", self.index_md())
+
+    def test_rebuild_reattaches_snapshots_to_their_session(self):
+        save_transcript.archive(self.transcript, self.event("Stop"), env=self.env, home=self.home)
+        save_transcript.archive(self.transcript, self.event("PreCompact"),
+                                env=self.env, home=self.home)
+        os.remove(os.path.join(self.root, "proj", session_index.INDEX_JSON))
+        save_transcript.rebuild_index(self.env, self.home)
+        sessions = self.index_json()["sessions"]
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["snapshots"], ["2026-08-18_0900-dead1234.precompact-1.md"])
+
+    def test_index_files_are_owner_only(self):
+        save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
+        for name in (session_index.INDEX_MD, session_index.INDEX_JSON):
+            path = os.path.join(self.root, "proj", name)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600, name)
+
+    def test_concurrent_saves_keep_both_sessions(self):
+        """Two sessions in the same project can finish a turn at the same instant;
+        a lost read-modify-write would silently drop one from the memory."""
+        import threading
+        path, event = self.second_session()
+        errors = []
+
+        def run(transcript, ev):
+            try:
+                for _ in range(5):
+                    save_transcript.archive(transcript, ev, env=self.env, home=self.home)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run, args=(self.transcript, self.event())),
+                   threading.Thread(target=run, args=(path, event))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        ids = {s["session_id"] for s in self.index_json()["sessions"]}
+        self.assertEqual(ids, {"dead1234-beef", "cafe5678-9999"})
+
+
+class TestProjectAttribution(HookTestCase):
+    def test_a_session_that_changed_directory_stays_in_one_folder(self):
+        """Regression: running `cd` inside a session made the hook file later
+        turns under a second project, duplicating the conversation."""
+        event = self.event()
+        event["cwd"] = os.path.join(self.home, "altrove")
+        save_transcript.archive(self.transcript, self.event(), env=self.env, home=self.home)
+        save_transcript.archive(self.transcript, event, env=self.env, home=self.home)
+        folders = [d for d in os.listdir(self.root)
+                   if os.path.isdir(os.path.join(self.root, d))]
+        self.assertEqual(folders, ["proj"])
+
+
+class TestBackfill(HookTestCase):
+    def setUp(self):
+        super().setUp()
+        self.projects = os.path.join(self.home, ".claude", "projects", "-proj")
+        os.makedirs(os.path.join(self.projects, "sess", "subagents"))
+        for path in (os.path.join(self.projects, "sess.jsonl"),
+                     os.path.join(self.projects, "sess", "subagents", "agent-1.jsonl")):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(self.text + "\n")
+
+    def test_archives_history_but_skips_subagent_fragments(self):
+        """A subagent transcript is part of a session, not a session: indexing it
+        separately would bury the real conversations."""
+        done, total = save_transcript.backfill(self.env, self.home)
+        self.assertEqual((done, total), (1, 1))
+        self.assertEqual(len(self.index_json()["sessions"]), 1)
+
+    def index_json(self, sub="proj"):
+        return json.loads(read_text(os.path.join(self.root, sub, session_index.INDEX_JSON)))
