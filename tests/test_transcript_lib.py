@@ -279,3 +279,24 @@ class TestSessionCwd(unittest.TestCase):
 
     def test_falls_back_when_no_record_has_one(self):
         self.assertEqual(lib.session_cwd([{"type": "user"}], "/fallback"), "/fallback")
+
+
+class TestHasConversation(unittest.TestCase):
+    """Claude Code leaves session shells holding only a generated title; filing
+    them adds entries to the memory that can never answer anything."""
+
+    def test_metadata_only_transcript_is_not_a_conversation(self):
+        records = [rec(type="ai-title", aiTitle="Titolo"), rec(type="agent-name")]
+        self.assertFalse(lib.has_conversation(records))
+
+    def test_a_single_user_message_is_enough(self):
+        self.assertTrue(lib.has_conversation(
+            [rec(type="user", message={"role": "user", "content": "ciao"})]))
+
+    def test_injected_context_alone_is_not_enough(self):
+        self.assertFalse(lib.has_conversation(
+            [rec(type="user", isMeta=True, message={"role": "user", "content": "<reminder/>"})]))
+
+    def test_tool_only_assistant_turn_counts(self):
+        self.assertTrue(lib.has_conversation([rec(type="assistant", message={
+            "content": [{"type": "tool_use", "id": "a", "name": "Read", "input": {}}]})]))

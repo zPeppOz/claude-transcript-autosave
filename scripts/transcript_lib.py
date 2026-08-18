@@ -88,6 +88,23 @@ def load_records(text):
     return records
 
 
+def has_conversation(records):
+    """True when the transcript holds an actual exchange.
+
+    Claude Code leaves behind session shells that contain only metadata — a
+    generated title, an agent name, nothing said. Archiving those adds entries to
+    the memory that can never answer a question, so they are skipped rather than
+    filed under a project nobody recognises.
+    """
+    for rec in records:
+        rtype = rec.get("type")
+        if rtype == "assistant" and (rec.get("message") or {}).get("content"):
+            return True
+        if rtype == "user" and not rec.get("isMeta") and _visible_user_text(rec):
+            return True
+    return False
+
+
 def parse_ts(value):
     if not isinstance(value, str) or not value:
         return None

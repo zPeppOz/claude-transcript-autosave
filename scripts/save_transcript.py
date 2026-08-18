@@ -241,6 +241,8 @@ def archive(transcript_path, event, env=None, home=None):
     records = lib.load_records(text)
     if not records:
         return {"skipped": "transcript vuoto", "path": transcript_path}
+    if not lib.has_conversation(records):
+        return {"skipped": "nessuna conversazione", "path": transcript_path}
 
     session_id = event.get("session_id") or ""
     hook_event = event.get("hook_event_name") or "manual"

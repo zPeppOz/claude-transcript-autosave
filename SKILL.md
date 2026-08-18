@@ -114,10 +114,27 @@ grep -l "src/lib/import-platform/etl.ts" ~/.claude/session-archive/*/INDEX.md
 cat ~/.claude/session-archive/addway-siarx/2026-07-28_1803-eed271b7.md
 ```
 
-Cerca **prima negli `INDEX.md`**, non nei transcript completi: gli indici sono
-piccoli e densi, i transcript sono decine di MB e un `grep -r` su tutto
-l'archivio riempie il contesto di rumore. Passa al `.md` completo solo quando sai
-quale ti serve.
+Cerca **prima negli `INDEX.md`**: sono piccoli e densi. Nell'archivio reale
+l'indice del progetto più grande pesa 64 KB contro i 59 MB dei suoi transcript —
+un `grep -r` su tutto riempirebbe il contesto di rumore per trovare la stessa
+cosa.
+
+Se l'indice non basta, scendi al secondo livello. L'indice contiene la richiesta
+iniziale, il titolo e i file toccati: un termine detto a metà conversazione lì non
+c'è. In quel caso restringi a un progetto e cerca nei transcript, che è costoso
+ma mirato:
+
+```bash
+# nell'indice non c'è: cerca nel testo delle conversazioni di UN progetto
+grep -rl "openfga" ~/.claude/session-archive/addway-siarx/*.md
+
+# con contesto, per capire se è la sessione giusta prima di aprirla
+grep -rn -C2 "openfga" ~/.claude/session-archive/addway-siarx/*.md | head -40
+```
+
+L'ordine conta: indice → transcript di un progetto → transcript completo. Saltare
+al terzo livello significa caricare decine di MB per una domanda che l'indice
+avrebbe risolto in un `grep`.
 
 Ogni voce dell'indice contiene le chiavi con cui si recupera davvero una
 conversazione, scelte perché rispondono alle domande che le persone fanno

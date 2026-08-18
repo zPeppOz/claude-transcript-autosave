@@ -527,3 +527,14 @@ class TestBackfill(HookTestCase):
 
     def index_json(self, sub="proj"):
         return json.loads(read_text(os.path.join(self.root, sub, session_index.INDEX_JSON)))
+
+
+class TestEmptyShells(HookTestCase):
+    def test_metadata_only_transcript_is_not_archived(self):
+        path = os.path.join(self.tmp.name, "shell.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "ai-title", "aiTitle": "Titolo",
+                                 "sessionId": "aa12d12e"}) + "\n")
+        result = save_transcript.archive(path, self.event(), env=self.env, home=self.home)
+        self.assertEqual(result.get("skipped"), "nessuna conversazione")
+        self.assertFalse(os.path.isdir(os.path.join(self.root, "proj")))
