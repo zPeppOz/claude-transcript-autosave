@@ -77,6 +77,57 @@ class TestFirstPrompt(unittest.TestCase):
         self.assertEqual(idx.first_prompt([assistant(("Read", {"file_path": "a"}))]), "")
 
 
+class TestLaterPrompts(unittest.TestCase):
+    """The opening request alone misses where a conversation drifted: a session
+    that starts as "fix the test" and ends redesigning auth is invisible to grep
+    without the later asks."""
+
+    def test_collects_the_requests_after_the_opening_one(self):
+        records = [user("sistemami il build che è rotto"),
+                   user("adesso ridisegna il flusso di autenticazione"),
+                   user("aggiorna anche la documentazione del modulo")]
+        self.assertEqual(idx.later_prompts(records),
+                         ["adesso ridisegna il flusso di autenticazione",
+                          "aggiorna anche la documentazione del modulo"])
+
+    def test_short_acknowledgements_are_noise(self):
+        records = [user("sistemami il build che è rotto"),
+                   user("ok"), user("continua pure"),
+                   user("ora aggiungi il test di regressione")]
+        self.assertEqual(idx.later_prompts(records),
+                         ["ora aggiungi il test di regressione"])
+
+    def test_bare_commands_are_noise(self):
+        records = [user("sistemami il build che è rotto"),
+                   user("/compact"),
+                   user("ora aggiungi il test di regressione")]
+        self.assertEqual(idx.later_prompts(records),
+                         ["ora aggiungi il test di regressione"])
+
+    def test_keeps_the_last_ones_when_there_are_many(self):
+        records = [user("richiesta di apertura della sessione")] + [
+            user(f"richiesta successiva numero {i} con dettagli") for i in range(10)]
+        got = idx.later_prompts(records)
+        self.assertEqual(len(got), 4)
+        self.assertIn("numero 6", got[0])
+        self.assertIn("numero 9", got[-1])
+
+    def test_each_prompt_is_truncated(self):
+        records = [user("richiesta di apertura della sessione"), user("x" * 500)]
+        got = idx.later_prompts(records)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(len(got[0]), 121)
+        self.assertTrue(got[0].endswith("…"))
+
+    def test_injected_meta_messages_are_ignored(self):
+        records = [user("richiesta di apertura della sessione"),
+                   user("contesto iniettato dal sistema, non dall'utente", meta=True)]
+        self.assertEqual(idx.later_prompts(records), [])
+
+    def test_a_session_with_one_request_has_none(self):
+        self.assertEqual(idx.later_prompts([user("una sola richiesta in tutto")]), [])
+
+
 class TestEntryAndUpsert(unittest.TestCase):
     def entry(self, session_id="s1", title="Titolo", started="2026-08-18T10:00:00.000Z",
               snapshot=""):
@@ -93,6 +144,14 @@ class TestEntryAndUpsert(unittest.TestCase):
         self.assertEqual(e["files_edited"], ["a.ts"])
         self.assertEqual(e["duration_min"], 30)
         self.assertEqual(e["session_id"], "s1")
+
+    def test_entry_records_the_later_prompts(self):
+        records = [user("la richiesta di apertura"),
+                   user("adesso ridisegna il flusso di autenticazione")]
+        meta = lib.session_meta(records, session_id="s1", home="/home/u")
+        e = idx.build_entry(records, meta, "file.md", "file.jsonl")
+        self.assertEqual(e["later_prompts"],
+                         ["adesso ridisegna il flusso di autenticazione"])
 
     def test_same_session_replaces_instead_of_appending(self):
         """The hook archives the same session on every turn; appending would grow
@@ -146,6 +205,11 @@ class TestRendering(unittest.TestCase):
         """An investigation that changed no files is still worth recalling."""
         md = idx.render_index_md(self.index(files_edited=[], files_read=["src/auth.ts"]))
         self.assertIn("consultati: `src/auth.ts`", md)
+
+    def test_later_prompts_render_as_poi(self):
+        md = idx.render_index_md(self.index(
+            later_prompts=["ridisegna l'autenticazione", "aggiorna i docs"]))
+        self.assertIn("- poi: ridisegna l'autenticazione · aggiorna i docs", md)
 
     def test_long_file_lists_are_summarised(self):
         md = idx.render_index_md(self.index(files_edited=[f"f{i}.ts" for i in range(9)]))

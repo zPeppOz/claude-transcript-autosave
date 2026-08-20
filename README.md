@@ -4,7 +4,9 @@ Una memoria automatica delle conversazioni con Claude Code. Si aggancia agli
 hook, archivia ogni sessione mentre accade — Markdown leggibile più copia
 `.jsonl` fedele — e mantiene in ogni progetto un indice interrogabile di cosa è
 stato detto, così una sessione passata si ritrova con un `grep` invece che a
-memoria.
+memoria. A ogni avvio di sessione, l'hook `SessionStart` inietta le voci
+recenti dell'indice del progetto nel contesto: il passato si presenta da solo,
+senza che nessuno debba pensare a cercarlo.
 
 ```
 ~/.claude/session-archive/
@@ -25,8 +27,14 @@ Una voce di indice:
 ## 2026-07-28 18:03 — Add DDP import and fascicolo tracking
 - `2026-07-28_1803-eed271b7.md` · 2 turni · 15 tool · 3 min · branch `test`
 - chiesto: Review this change for security vulnerabilities…
+- poi: ora sistema le vulnerabilità trovate · aggiungi un test di regressione
 - consultati: `src/lib/import-platform/etl.ts`, `src/lib/import-platform/persist.ts` (+8)
 ```
+
+`chiesto:` è la richiesta iniziale con le parole dell'utente; `poi:` sono le
+ultime richieste sostanziali successive, perché una sessione partita come "fixa
+il test" e finita a ridisegnare l'autenticazione sarebbe altrimenti invisibile
+a `grep`.
 
 ## Installazione
 
@@ -36,9 +44,10 @@ cd ~/xr1/claude-transcript-autosave
 ./install.sh
 ```
 
-Registra la skill in `~/.claude/skills/` e tre hook in `~/.claude/settings.json`
-(`Stop`, `SessionEnd`, `PreCompact`), fondendosi con la configurazione esistente
-e facendone un backup. Vale anche per le sessioni già aperte, senza riavvio.
+Registra la skill in `~/.claude/skills/` e quattro hook in
+`~/.claude/settings.json` (`Stop`, `SessionEnd`, `PreCompact`, `SessionStart`),
+fondendosi con la configurazione esistente e facendone un backup. Vale anche per
+le sessioni già aperte, senza riavvio.
 
 Nota: lo `Stop` non scatta sui turni interrotti con ESC — è il comportamento di
 Claude Code, non un difetto. `SessionEnd` copre quel caso alla chiusura.

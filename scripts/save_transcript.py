@@ -20,12 +20,18 @@ quietly disappears.
 The Markdown is rewritten in place on each turn, so the archive always holds the
 current state of the session rather than one file per turn.
 
+Besides archiving, the script answers the `SessionStart` hook: it reads the
+project's index and prints the recent entries as `additionalContext` JSON, so
+past sessions surface in a new one without anyone grepping for them.
+
 Two contracts this script must never break:
 
-  1. It always exits 0 and never writes to stdout. A hook that fails loudly, or
-     that prints stray text where Claude Code expects JSON, turns a background
-     convenience into something that interferes with every turn. Failures go to
-     `<root>/_autosave.log` where they can be read after the fact.
+  1. It always exits 0, and stdout carries either nothing or exactly the JSON
+     Claude Code expects — the save hooks print nothing, `SessionStart` prints
+     the injection payload or nothing. Stray text where Claude Code expects
+     JSON turns a background convenience into something that interferes with
+     every turn. Failures go to `<root>/_autosave.log` where they can be read
+     after the fact.
 
   2. PreCompact snapshots are immutable (`.precompact-1.md`). Compaction is the
      one moment the full pre-summary conversation still exists; overwriting the
@@ -56,6 +62,8 @@ import transcript_lib as lib  # noqa: E402
 
 DEFAULT_ROOT = "~/.claude/session-archive"
 LOG_NAME = "_autosave.log"
+INJECT_MAX_CHARS = 3500
+INJECT_DEFAULT_SESSIONS = 5
 LOG_MAX_BYTES = 512 * 1024
 LOG_KEEP_LINES = 200
 FALSEY = {"0", "false", "off", "no"}
@@ -215,6 +223,63 @@ def next_snapshot_path(directory, base, suffix):
         if not os.path.exists(candidate + ".md") and not os.path.exists(candidate + ".jsonl"):
             return candidate
     return os.path.join(directory, f"{base}.{suffix}-overflow")
+
+
+# --------------------------------------------------------------------------
+# session start injection
+# --------------------------------------------------------------------------
+
+def session_start_context(event, env=None, home=None):
+    """Build the memory context injected into a new session, or "" if none.
+
+    The indexes make the archive greppable, but grep only helps if someone
+    thinks to run it. SessionStart is the push half of the memory: the recent
+    entries of the project's index are handed to the session up front, so past
+    work surfaces without being asked for.
+    """
+    env = env if env is not None else os.environ
+    home = home or os.path.expanduser("~")
+    if not env_flag(env, "CLAUDE_TRANSCRIPT_INJECT", True):
+        return ""
+    if (event.get("source") or "") == "compact":
+        # A compacted session already carries its own summary; re-injecting the
+        # archive would spend context on exactly what the user just condensed.
+        return ""
+    cwd = event.get("cwd") or ""
+    if not cwd:
+        return ""
+    directory = os.path.join(resolve_root(env), lib.project_slug(cwd, home))
+    sessions = session_index.sorted_sessions(session_index.load_index(directory))
+    # On resume the session's own history is already in the window: its entry is
+    # the one piece of the archive with zero news for it.
+    sessions = [s for s in sessions
+                if s.get("session_id") != (event.get("session_id") or "")]
+    if not sessions:
+        return ""
+
+    count = max(1, env_int(env, "CLAUDE_TRANSCRIPT_INJECT_SESSIONS",
+                           INJECT_DEFAULT_SESSIONS))
+    header = ("Memoria delle sessioni recenti su questo progetto "
+              f"(archivio: {directory}):")
+    footer = ("Per cercarne altre o rileggerle per intero: "
+              f"grep -i \"<tema>\" {os.path.join(directory, session_index.INDEX_MD)}")
+    out, total = [header], len(header) + len(footer)
+    for s in sessions[:count]:
+        parts = [f"- {(s.get('started') or '')[:10]} — "
+                 f"{s.get('title') or 'senza titolo'} ({s.get('md', '?')})"]
+        if s.get("first_prompt"):
+            parts.append(f"  chiesto: {s['first_prompt']}")
+        if s.get("later_prompts"):
+            parts.append("  poi: " + " · ".join(s["later_prompts"]))
+        if s.get("files_edited"):
+            parts.append("  modificati: " + ", ".join(s["files_edited"][:5]))
+        block = "\n".join(parts)
+        if total + len(block) + 1 > INJECT_MAX_CHARS:
+            break
+        out.append(block)
+        total += len(block) + 1
+    out.append(footer)
+    return "\n".join(out)
 
 
 # --------------------------------------------------------------------------
@@ -426,6 +491,22 @@ def main(argv=None):
 
     if not event:
         log(root, "SKIP nessun payload su stdin")
+        return 0
+
+    if (event.get("hook_event_name") or "") == "SessionStart":
+        sid = (event.get("session_id") or "?")[:8]
+        try:
+            context = session_start_context(event, env=env, home=home)
+        except Exception as exc:  # noqa: BLE001 - injection must never break startup
+            log(root, f"ERRORE SessionStart {type(exc).__name__}: {exc}")
+            return 0
+        if context:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": context}}, ensure_ascii=False))
+            log(root, f"OK SessionStart {sid} iniettati {len(context)} caratteri")
+        else:
+            log(root, f"SKIP SessionStart {sid}: niente da iniettare")
         return 0
 
     try:

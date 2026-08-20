@@ -222,6 +222,128 @@ class TestHookProcess(HookTestCase):
         self.assertIn("ERRORE", log)
 
 
+class TestSessionStartContext(HookTestCase):
+    """SessionStart is the push half of the memory: the recent index entries are
+    handed to the new session instead of waiting to be grepped."""
+
+    def start_event(self, source="startup"):
+        return {"hook_event_name": "SessionStart", "session_id": "new12345",
+                "cwd": self.cwd, "source": source}
+
+    def archive_current(self):
+        save_transcript.archive(self.transcript, self.event(),
+                                env=self.env, home=self.home)
+
+    def test_recent_sessions_reach_the_new_session(self):
+        self.archive_current()
+        ctx = save_transcript.session_start_context(self.start_event(),
+                                                    self.env, self.home)
+        self.assertIn("prima domanda", ctx)
+
+    def test_empty_archive_says_nothing(self):
+        ctx = save_transcript.session_start_context(self.start_event(),
+                                                    self.env, self.home)
+        self.assertEqual(ctx, "")
+
+    def test_compact_resume_is_not_reinjected(self):
+        """After compaction the session already carries its own summary; adding
+        the archive on top would spend context on what the user just kept."""
+        self.archive_current()
+        ctx = save_transcript.session_start_context(self.start_event(source="compact"),
+                                                    self.env, self.home)
+        self.assertEqual(ctx, "")
+
+    def test_injection_can_be_disabled(self):
+        self.archive_current()
+        env = dict(self.env, CLAUDE_TRANSCRIPT_INJECT="0")
+        ctx = save_transcript.session_start_context(self.start_event(), env, self.home)
+        self.assertEqual(ctx, "")
+
+    def test_session_count_is_configurable(self):
+        self.archive_current()
+        second = os.path.join(self.tmp.name, "beef5678-feed.jsonl")
+        with open(second, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "type": "user", "timestamp": "2026-08-19T09:00:00.000Z",
+                "cwd": self.cwd, "sessionId": "beef5678-feed",
+                "message": {"role": "user",
+                            "content": "seconda richiesta completamente diversa"}}) + "\n")
+        save_transcript.archive(second, {"hook_event_name": "Stop",
+                                         "session_id": "beef5678-feed",
+                                         "transcript_path": second, "cwd": self.cwd},
+                                env=self.env, home=self.home)
+        env = dict(self.env, CLAUDE_TRANSCRIPT_INJECT_SESSIONS="1")
+        ctx = save_transcript.session_start_context(self.start_event(), env, self.home)
+        self.assertIn("seconda richiesta", ctx)
+        self.assertNotIn("prima domanda", ctx)
+
+    def test_a_resumed_session_does_not_inject_itself(self):
+        """On resume the session's own history is already in the window; its
+        index entry would be the one piece of the archive with zero news."""
+        self.archive_current()
+        event = self.start_event(source="resume")
+        event["session_id"] = "dead1234-beef"
+        ctx = save_transcript.session_start_context(event, self.env, self.home)
+        self.assertEqual(ctx, "")
+
+    def test_context_is_capped(self):
+        directory = os.path.join(self.root, "proj")
+        os.makedirs(directory)
+        sessions = [{"session_id": f"s{i}", "title": "titolo",
+                     "started": f"2026-07-{(i % 28) + 1:02d}T10:00:00+00:00",
+                     "md": f"s{i}.md", "first_prompt": "parole a caso " * 40,
+                     "files_edited": [f"file{j}.ts" for j in range(8)]}
+                    for i in range(50)]
+        with open(os.path.join(directory, "_index.json"), "w", encoding="utf-8") as fh:
+            json.dump({"project": "proj", "sessions": sessions}, fh)
+        env = dict(self.env, CLAUDE_TRANSCRIPT_INJECT_SESSIONS="50")
+        ctx = save_transcript.session_start_context(self.start_event(), env, self.home)
+        self.assertTrue(ctx)
+        self.assertLessEqual(len(ctx), save_transcript.INJECT_MAX_CHARS)
+
+
+class TestSessionStartProcess(HookTestCase):
+    """Process contract for SessionStart: JSON on stdout is how the context gets
+    injected — the one hook where stdout is supposed to speak."""
+
+    def run_hook(self, payload, env_extra=None):
+        env = dict(os.environ)
+        env.update(self.env)
+        env.update(env_extra or {})
+        env["HOME"] = self.home
+        return subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "save_transcript.py")],
+            input=payload, capture_output=True, text=True, env=env, timeout=30)
+
+    def payload(self, source="startup"):
+        return json.dumps({"hook_event_name": "SessionStart",
+                           "session_id": "new12345", "cwd": self.cwd,
+                           "source": source})
+
+    def test_prints_the_hook_json_contract(self):
+        save_transcript.archive(self.transcript, self.event(),
+                                env=self.env, home=self.home)
+        proc = self.run_hook(self.payload())
+        self.assertEqual(proc.returncode, 0)
+        out = json.loads(proc.stdout)
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "SessionStart")
+        self.assertIn("prima domanda", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_nothing_to_say_prints_nothing(self):
+        proc = self.run_hook(self.payload())
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+
+    def test_a_broken_index_never_reaches_stdout(self):
+        directory = os.path.join(self.root, "proj")
+        os.makedirs(directory)
+        with open(os.path.join(directory, "_index.json"), "w", encoding="utf-8") as fh:
+            fh.write("{ rotto,,, }")
+        proc = self.run_hook(self.payload())
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+
+
 FOREIGN = {
     "hooks": {
         "PostToolUse": [{"matcher": "Edit|Write",
@@ -254,7 +376,7 @@ class TestInstaller(unittest.TestCase):
     def test_installs_into_a_missing_file(self):
         self.assertEqual(self.run_cli(), 0)
         self.assertEqual(install_hooks.registered_events(self.read()),
-                         ["PreCompact", "SessionEnd", "Stop"])
+                         ["PreCompact", "SessionEnd", "SessionStart", "Stop"])
 
     def test_preserves_unrelated_settings_and_hooks(self):
         self.write(FOREIGN)

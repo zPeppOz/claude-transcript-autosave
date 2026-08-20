@@ -1,13 +1,16 @@
 ---
 name: transcript-autosave
-description: Memoria automatica delle conversazioni con Claude Code. Aggancia gli hook Stop, SessionEnd e PreCompact per archiviare ogni sessione su disco (Markdown leggibile + copia JSONL) e mantiene in ogni cartella di progetto un INDEX.md interrogabile, con richiesta iniziale e file toccati di ogni conversazione. Usa questa skill ogni volta che serve ricordare o ritrovare qualcosa detto in una sessione passata: "cosa avevamo deciso su X", "come avevamo risolto quel bug", "riprendiamo il lavoro di ieri", "di cosa abbiamo parlato la settimana scorsa", "quale sessione ha toccato questo file", "ho perso tutto dopo il /clear". Usala anche quando si parla di salvare, archiviare, esportare, conservare o versionare transcript, conversazioni o cronologia delle sessioni; di attivare, disattivare, verificare o diagnosticare il salvataggio automatico; di hook Stop / SessionEnd / PreCompact / SubagentStop; o di ricostruire l'indice dell'archivio. Prima di rispondere "non ho memoria delle sessioni precedenti", controlla qui: probabilmente ce l'hai.
+description: Memoria automatica delle conversazioni con Claude Code. Aggancia gli hook Stop, SessionEnd e PreCompact per archiviare ogni sessione su disco (Markdown leggibile + copia JSONL), mantiene in ogni cartella di progetto un INDEX.md interrogabile con richiesta iniziale, richieste successive e file toccati di ogni conversazione, e a ogni SessionStart inietta nella nuova sessione le voci recenti dell'indice del progetto. Usa questa skill ogni volta che serve ricordare o ritrovare qualcosa detto in una sessione passata: "cosa avevamo deciso su X", "come avevamo risolto quel bug", "riprendiamo il lavoro di ieri", "di cosa abbiamo parlato la settimana scorsa", "quale sessione ha toccato questo file", "ho perso tutto dopo il /clear". Usala anche quando si parla di salvare, archiviare, esportare, conservare o versionare transcript, conversazioni o cronologia delle sessioni; di attivare, disattivare, verificare o diagnosticare il salvataggio automatico; di hook Stop / SessionEnd / PreCompact / SubagentStop; o di ricostruire l'indice dell'archivio. Prima di rispondere "non ho memoria delle sessioni precedenti", controlla qui: probabilmente ce l'hai.
 ---
 
 # Transcript autosave
 
 Dà a Claude una memoria delle conversazioni passate. Tre hook (`Stop`,
-`SessionEnd`, `PreCompact`) archiviano ogni sessione mentre accade, e ogni
-cartella di progetto mantiene un indice interrogabile di cosa è stato detto:
+`SessionEnd`, `PreCompact`) archiviano ogni sessione mentre accade, ogni
+cartella di progetto mantiene un indice interrogabile di cosa è stato detto, e
+un quarto hook (`SessionStart`) porta le voci recenti di quell'indice dentro
+ogni nuova sessione, così il passato si presenta da solo invece di aspettare un
+`grep`:
 
 ```
 ~/.claude/session-archive/
@@ -45,7 +48,7 @@ Due punti da tenere a mente quando lavori su questa skill:
 Dalla radice del repo:
 
 ```bash
-./install.sh                      # registra la skill + gli hook (Stop, SessionEnd, PreCompact)
+./install.sh                      # registra la skill + gli hook (Stop, SessionEnd, PreCompact, SessionStart)
 ./install.sh --dry-run            # mostra cosa cambierebbe nei settings, senza scrivere
 ./install.sh --events Stop        # solo fine turno
 python3 scripts/install_hooks.py --status   # cosa è registrato, dove, quante sessioni in archivio
@@ -142,6 +145,9 @@ davvero:
 
 - **`chiesto:`** — la richiesta iniziale con le parole dell'utente, prima che la
   conversazione derivasse. È il campo più utile dell'indice.
+- **`poi:`** — le ultime richieste sostanziali dopo la prima. Una sessione
+  partita come "fixa il test" e finita a ridisegnare l'autenticazione sarebbe
+  invisibile a `grep` senza questo campo.
 - **`modificati:`** / **`consultati:`** — i file toccati. Risponde a "quale
   sessione ha lavorato su questo file", che titolo e data da soli non possono.
 - titolo, data, durata, numero di turni, branch git, snapshot pre-compattazione.
@@ -172,6 +178,8 @@ Variabili d'ambiente, tutte opzionali. Impostale nel tuo profilo shell o in
 | `CLAUDE_TRANSCRIPT_META` | `0` | `1` include i messaggi di sistema iniettati |
 | `CLAUDE_TRANSCRIPT_MAX_RESULT` | `2000` | Caratteri di output tool tenuti per chiamata |
 | `CLAUDE_TRANSCRIPT_MAX_MB` | `25` | Oltre questa soglia salva solo il `.jsonl` |
+| `CLAUDE_TRANSCRIPT_INJECT` | `1` | `0` disattiva l'iniezione di memoria a `SessionStart` |
+| `CLAUDE_TRANSCRIPT_INJECT_SESSIONS` | `5` | Quante sessioni recenti iniettare a inizio sessione |
 
 Il `.jsonl` non è mai filtrato da queste opzioni: qualsiasi cosa escludi dal
 Markdown resta nella copia fedele.
@@ -187,11 +195,19 @@ Markdown resta nella copia fedele.
 | Solo `.jsonl`, niente `.md` | Transcript oltre `CLAUDE_TRANSCRIPT_MAX_MB` | il log dice `render saltato` |
 | Un file per turno invece di uno per sessione | Il transcript non ha timestamp: nomi `nodate-*` | controlla i nomi in archivio |
 
-Lo script esce **sempre** con codice 0 e non scrive mai su stdout: un hook che
-fallisce rumorosamente, o che stampa testo dove Claude Code si aspetta JSON,
-trasformerebbe una comodità di sfondo in un fastidio a ogni turno. Per questo gli
-errori finiscono nel log invece di interrompere il turno — e per questo il log è
-il primo posto dove guardare.
+Lo script esce **sempre** con codice 0 e su stdout scrive o niente o
+esattamente il JSON che Claude Code si aspetta: gli hook di salvataggio non
+stampano nulla, `SessionStart` stampa il payload di iniezione oppure nulla. Un
+hook che fallisce rumorosamente, o che stampa testo spurio dove Claude Code si
+aspetta JSON, trasformerebbe una comodità di sfondo in un fastidio a ogni turno.
+Per questo gli errori finiscono nel log invece di interrompere il turno — e per
+questo il log è il primo posto dove guardare.
+
+L'iniezione a `SessionStart` lascia anch'essa una riga di log (`OK SessionStart
+<sid> iniettati N caratteri` oppure `SKIP ... niente da iniettare`). Non scatta
+alla ripresa post-compattazione (`source: compact`, il contesto c'è già), non
+inietta la voce della sessione stessa quando si riprende con `--resume`, e il
+payload è comunque limitato a pochi KB.
 
 ## Rimuovere
 

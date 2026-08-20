@@ -151,6 +151,36 @@ def first_prompt(records, limit=300):
     return bare
 
 
+# A later request has to say something to earn an index line: below this length
+# it is almost always "ok", "continua", "sì" — noise that would bury the drift.
+LATER_PROMPT_MIN = 20
+LATER_PROMPT_LIMIT = 4
+LATER_PROMPT_CHARS = 120
+
+
+def later_prompts(records, limit=LATER_PROMPT_LIMIT, each=LATER_PROMPT_CHARS):
+    """The requests that came after the opening one.
+
+    A session that starts as "fix the test" and ends redesigning auth is
+    invisible to grep if only the first prompt is indexed. The last few
+    substantial user messages are where the conversation actually went.
+    """
+    flats = []
+    for rec in records:
+        if rec.get("type") != "user" or rec.get("isMeta"):
+            continue
+        text = lib._visible_user_text(rec)
+        if not text:
+            continue
+        flat = _unwrap_command(" ".join(text.split()))
+        if not flat or _BARE_COMMAND.fullmatch(flat):
+            continue
+        flats.append(flat)
+    kept = [f[:each] + ("…" if len(f) > each else "")
+            for f in flats[1:] if len(f) >= LATER_PROMPT_MIN]
+    return kept[-limit:]
+
+
 def build_entry(records, meta, md_name, jsonl_name, snapshot=""):
     stamps = [lib.parse_ts(r.get("timestamp")) for r in records]
     stamps = [s for s in stamps if s]
@@ -172,6 +202,7 @@ def build_entry(records, meta, md_name, jsonl_name, snapshot=""):
         "models": meta.models,
         "cwd": meta.cwd,
         "first_prompt": first_prompt(records),
+        "later_prompts": later_prompts(records),
         "files_edited": edited,
         "files_read": read,
         "md": md_name,
@@ -287,6 +318,8 @@ def render_index_md(index, updated=None):
         lines = [head, "- " + " · ".join(facts)]
         if s.get("first_prompt"):
             lines.append(f"- chiesto: {s['first_prompt']}")
+        if s.get("later_prompts"):
+            lines.append("- poi: " + " · ".join(s["later_prompts"]))
         if s.get("files_edited"):
             lines.append(f"- modificati: {_fmt_files(s['files_edited'])}")
         elif s.get("files_read"):
